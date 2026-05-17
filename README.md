@@ -20,7 +20,7 @@ Submission for the [Kaggle Gemma 4 Good Hackathon][hackathon] (Digital Equity & 
 
 The Korean production build needs Korean Map APIs (ODsay / T-Map / Naver) and a Korean speaker — neither is available to most international judges. The Judge Demo APK runs a pinned scenario but **still executes the on-device Gemma 4 model for real on every photo and every audio clip**.
 
-1. **Install** `gilbeot-judge-demo.apk` from the GitHub Releases page (link TBD before submission).
+1. **Install** [`gilbeot-judge-demo.apk`](https://github.com/psymon-ai/gilbeot-public/releases/download/v1.0.0/gilbeot-judge-demo.apk) (201 MB) from the [GitHub Releases page](https://github.com/psymon-ai/gilbeot-public/releases/tag/v1.0.0). Android 10+ required; sideload via `adb install` or enable "Install unknown apps" for your browser.
 2. Open **Gilbeot Demo**. First launch downloads the ~2.4 GB Gemma 4 bundle from Hugging Face ([`psymon/gemma-4-E2B-it-korean-audio-litertlm`](https://huggingface.co/psymon/gemma-4-E2B-it-korean-audio-litertlm); ~3–5 minutes on Wi-Fi).
 3. Tap the **microphone** once. A pre-recorded Korean utterance (*"송파구보건소 가야 해" — I need to go to Songpa Health Center*) plays audibly. The on-device Gemma 4 audio model transcribes it in real time and shows both Korean and English text.
 4. Tap the **camera** button. A bundled subway-station photo opens full-screen with a round shutter at the bottom. Tap the shutter — the on-device Gemma 4 vision model emits a JSON instruction (`{ instruction, landmarks, is_arrival, arrow_tip_x, arrow_tail_x }`) and TTS reads the instruction aloud.
@@ -32,7 +32,7 @@ What runs live in the Demo APK: Gemma 4 audio, vision, text generation, JSON par
 
 ## Demo video
 
-📺 **3-minute walkthrough** — link TBD before submission.
+📺 **[3-minute walkthrough on YouTube](https://www.youtube.com/watch?v=jg-FSf5QdNI)**
 
 ## Architecture (one breath)
 
