@@ -21,7 +21,7 @@ Submission for the [Kaggle Gemma 4 Good Hackathon][hackathon] (Digital Equity & 
 The Korean production build needs Korean Map APIs (ODsay / T-Map / Naver) and a Korean speaker — neither is available to most international judges. The Judge Demo APK runs a pinned scenario but **still executes the on-device Gemma 4 model for real on every photo and every audio clip**.
 
 1. **Install** [`gilbeot-judge-demo.apk`](https://github.com/psymon-ai/gilbeot-public/releases/download/v1.0.0/gilbeot-judge-demo.apk) (201 MB) from the [GitHub Releases page](https://github.com/psymon-ai/gilbeot-public/releases/tag/v1.0.0). Android 10+ required; sideload via `adb install` or enable "Install unknown apps" for your browser.
-2. Open **Gilbeot Demo**. First launch downloads the ~2.4 GB Gemma 4 bundle from Hugging Face ([`psymon/gemma-4-E2B-it-korean-audio-litertlm`](https://huggingface.co/psymon/gemma-4-E2B-it-korean-audio-litertlm); ~3–5 minutes on Wi-Fi).
+2. Open **Gilbeot Demo**. First launch downloads the ~2.4 GB Gemma 4 bundle from Hugging Face ([`psymon/gilbeot-korean-audio-litertlm`](https://huggingface.co/psymon/gilbeot-korean-audio-litertlm); ~3–5 minutes on Wi-Fi).
 3. Tap the **microphone** once. A pre-recorded Korean utterance (*"송파구보건소 가야 해" — I need to go to Songpa Health Center*) plays audibly. The on-device Gemma 4 audio model transcribes it in real time and shows both Korean and English text.
 4. Tap the **camera** button. A bundled subway-station photo opens full-screen with a round shutter at the bottom. Tap the shutter — the on-device Gemma 4 vision model emits a JSON instruction (`{ instruction, landmarks, is_arrival, arrow_tip_x, arrow_tail_x }`) and TTS reads the instruction aloud.
 5. Repeat for photos 2 → 3 → 4. Photo 4 is the destination building; the model marks `is_arrival=true` and Gilbeot says goodbye.
@@ -75,7 +75,7 @@ The base Gemma 4 audio path returns **13.14 % CER** on our 134-utterance Korean 
 | Improvement vs device base                | ~2.6× reduction | (−62 % relative) |
 | HF reference (merged, fp16)               |  3.06 % | HF checkpoint, pre-deployment merge; quantization gap to deployed path ~2 pp |
 
-The deployed bundle has two parts: the LM weights are graft-patched in-place on the `.litertlm` (uploaded as a single `.litertlm` to Hugging Face at [`psymon/gemma-4-E2B-it-korean-audio-litertlm`](https://huggingface.co/psymon/gemma-4-E2B-it-korean-audio-litertlm)), and the audio adapter ships as an alpha-8 LoRA sidecar bundled in the APK at `assets/lora/`. Touching the audio encoder too aggressively inside `.litertlm` destabilized the Adreno 740 prefill kernel — the split keeps the encoder bytes untouched.
+The deployed bundle has two parts: the LM weights are graft-patched in-place on the `.litertlm` (uploaded as a single `.litertlm` to Hugging Face at [`psymon/gilbeot-korean-audio-litertlm`](https://huggingface.co/psymon/gilbeot-korean-audio-litertlm)), and the audio adapter ships as an alpha-8 LoRA sidecar bundled in the APK at `assets/lora/`. Touching the audio encoder too aggressively inside `.litertlm` destabilized the Adreno 740 prefill kernel — the split keeps the encoder bytes untouched.
 
 Patcher source + the engineering saga: [`tools/README.md`](tools/README.md).
 
@@ -128,3 +128,5 @@ Domain-logic source files (`app/lib/services/`, `app/lib/screens/`) use Korean c
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+_Gemma is a trademark of Google LLC._

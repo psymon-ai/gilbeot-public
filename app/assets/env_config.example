@@ -40,7 +40,7 @@ CACTUS_TRANSCRIBE_PROMPT=Transcribe the Korean audio exactly.
 # for the 5.00% CER deployment path; the base URL below loads cleanly but
 # gives 13.14% CER on the 134-utterance Korean held-out set.
 MODEL_LOCAL_PATH=
-MODEL_DOWNLOAD_URL=https://huggingface.co/psymon/gemma-4-E2B-it-korean-audio-litertlm/resolve/main/gemma-4-E2B-it.litertlm
+MODEL_DOWNLOAD_URL=https://huggingface.co/psymon/gilbeot-korean-audio-litertlm/resolve/main/gemma-4-E2B-it.litertlm
 
 # Fallback — official base bundle, pinned to the Gallery commit. The HF main
 # branch is a multi-resolution vision encoder (3 signatures) which
