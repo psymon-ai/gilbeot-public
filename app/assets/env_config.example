@@ -1,0 +1,93 @@
+# ========================================================================
+# Gilbeot — env_config (template)
+#
+# Copy this file to `env_config` (no extension) in the same directory and
+# fill in the placeholder values for the keys you need. Only the keys
+# actually used by the build you target need values:
+#
+#   Judge demo APK    (DEMO_MODE=true) :
+#       no Korean Map API keys required (canned route, hardcoded GPS)
+#       MODEL_DOWNLOAD_URL only — model auto-downloads from Hugging Face
+#       on first launch
+#
+#   Korean production (com.psymon.gilbeot.real) :
+#       three Korean Map API keys required (ODsay / Naver / T-Map) for
+#       live routing and map preview (FU107: T-Map POI replaces Kakao)
+#
+# See docs/build.md for the full setup walkthrough.
+# ========================================================================
+
+# Audio backend switch.
+# - litertlm: use the bundled on-device Gemma 4 .litertlm audio path.
+# - hf_proxy: send WAV bytes to scripts/hf_gemma_audio_server.py (dev only).
+GEMMA_AUDIO_BACKEND=litertlm
+HF_GEMMA_PROXY_URL=http://127.0.0.1:8008
+HF_PROXY_SKIP_LITERTLM=false
+GEMMA_SKIP_LITERTLM=false
+CACTUS_ASR_BIN=native
+CACTUS_MODEL_PATH=/data/local/tmp/cactus_transcribe/models/gemma4_merged_audio_int8_run59
+CACTUS_LANGUAGE=ko
+CACTUS_TRANSCRIBE_PROMPT=Transcribe the Korean audio exactly.
+
+# Model location — gemma_service tries in order:
+#   ① MODEL_LOCAL_PATH exists                → fromFile  (dev: ADB-pushed path)
+#   ② MODEL_DOWNLOAD_URL set                 → fromNetwork (Hugging Face download)
+#   ③ neither                                → explicit error
+#
+# DEFAULT (recommended) — Gilbeot's graft-patched .litertlm: same Gemma 4 E2B
+# bundle as the official Gallery commit, with the Korean audio LoRA grafted
+# in-place on the LM side (same-grid requant, see tools/README.md). Required
+# for the 5.00% CER deployment path; the base URL below loads cleanly but
+# gives 13.14% CER on the 134-utterance Korean held-out set.
+MODEL_LOCAL_PATH=
+MODEL_DOWNLOAD_URL=https://huggingface.co/psymon/gemma-4-E2B-it-korean-audio-litertlm/resolve/main/gemma-4-E2B-it.litertlm
+
+# Fallback — official base bundle, pinned to the Gallery commit. The HF main
+# branch is a multi-resolution vision encoder (3 signatures) which
+# flutter_gemma 0.14.5 refuses (see dev_log error 16, FU45).
+# MODEL_DOWNLOAD_URL=https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/7fa1d78473894f7e736a21d920c3aa80f950c0db/gemma-4-E2B-it.litertlm
+
+# Optional LoRA sidecar (Korean audio QAT). Enables the production-mode
+# Korean STT quality boost. Not needed for judge demo (audio path uses the
+# bundled WAV + base model).
+MODEL_LORA_LOCAL_PATH=
+
+# Optional runtime prompt hooks (dev — leave empty for normal use).
+GEMMA_AUDIO_TRANSCRIBE_PROMPT_FILE=
+GEMMA_AUDIO_SYSTEM_PROMPT_FILE=
+GEMMA_AUDIO_SAMPLER_CONFIG_FILE=
+
+# ─── Mode flags ─────────────────────────────────────────────────────────
+# Judge demo (Kaggle Gemma 4 hackathon submission). When true:
+#   UI/TTS English, Korean Map APIs skipped, bundled WAV + photos used,
+#   on-device Gemma 4 still runs for real on every photo and audio input.
+# scripts/build_install_demo_apk.py patches this to true at build time.
+DEMO_MODE=false
+
+# Eval mode — boots EvalScreen instead of home. Internal benchmarking.
+EVAL_MODE=false
+
+# ─── Korean Map / Search APIs (production-only) ─────────────────────────
+# These are NOT used by the judge demo build. They drive live routing for
+# the Korean production build (com.psymon.gilbeot.real).
+#
+# Get your own keys at:
+#   ODsay  : https://lab.odsay.com         (Transit routing — Korea)
+#   Naver  : https://www.ncloud.com         (NCP Mobile Dynamic Map SDK)
+#   T-Map  : https://openapi.sk.com         (Pedestrian routing + POI search — Korea)
+ODSAY_ANDROID_KEY=<YOUR_ODSAY_ANDROID_KEY>
+ODSAY_IOS_KEY=<YOUR_ODSAY_IOS_KEY>
+NAVER_CLIENT_ID=<YOUR_NCP_NAVER_CLIENT_ID>
+NAVER_CLIENT_SECRET=<YOUR_NCP_NAVER_CLIENT_SECRET>
+TMAP_APP_KEY=<YOUR_TMAP_APP_KEY>
+
+# Hugging Face token (only needed for gated model downloads — Gemma 4
+# litert-community is public, so this can stay blank for most users).
+HF_WRITE_API_KEY=
+HF_READ_API_KEY=
+
+# Demo GPS override — non-empty values bypass real GPS. Useful for
+# screen-recording on a desk far from the route. Leave empty in normal
+# use (real Geolocator output).
+DEMO_GPS_LAT=
+DEMO_GPS_LNG=

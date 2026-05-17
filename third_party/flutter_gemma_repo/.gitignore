@@ -1,0 +1,97 @@
+.dart_tool/
+.DS_Store
+trash_*
+.env
+docs/*
+!docs/LEGACY_API.md
+.claude/settings.local.json
+
+# Backup files
+*.old
+*.backup
+
+# IDE files
+.idea/
+
+# Test coverage
+coverage/
+
+# Sensitive configuration files
+example/config.json
+
+# Flutter build artifacts
+build/
+devtools_options.yaml
+
+# NPM files in root (should only be in web/rag/)
+/package.json
+/package-lock.json
+/vite.config.js
+
+# Web JS files are tracked for CDN distribution
+# Rebuild with: cd web/rag && npm run build && cp dist/* ../
+
+# But keep source files in web/rag/
+!web/rag/
+
+# Node modules
+node_modules/
+web/rag/node_modules/
+web/rag/dist/
+
+# Generated/downloaded models
+example/web/models/
+example/web/wasm/
+example/web/*.model
+
+# Desktop - cached/extracted JRE (downloaded at build time)
+example/macos/jre/
+**/jre/
+
+# Desktop - large JAR files (built/downloaded at build time)
+macos/Resources/litertlm-server.jar
+**/litertlm-server.jar
+
+# Desktop - TFLite C library (downloaded at build time)
+macos/Resources/tflite/libtensorflowlite_c.dylib
+
+# Temporary/internal documentation
+temporary_docs/
+DESKTOP_DEBUG.md
+
+# Test reports and review artifacts
+test_reports/
+
+# Investigation scripts
+example/scripts/
+
+docs/plans
+
+# LLVM coverage drift
+*.profraw
+
+# Working notes (drafts, plans, articles, investigation reports)
+_notes/
+
+# Misc
+firebase-debug.log
+tables.html
+test_audio.txt
+ai-edge-gallery/
+# Note: colabs/*.ipynb are tracked in repo (training notebooks) but
+# excluded from pub package via .pubignore.
+
+.remember/
+
+# Native prebuilts — built locally / fetched from native-v* GitHub Release
+# by hook/build.dart. Maintainers populate via native/litert_lm/build_*.sh
+# scripts, then upload to a native-v<X> GitHub Release tag; consumers
+# fetch from there at `pub get` time. Not tracked in git to keep clones
+# lean (each set is ~350 MB across all platforms).
+native/litert_lm/prebuilt/
+
+# Gilbeot vendors this fork in the deployment folder, so keep the Android
+# LiteRT-LM prebuilts with the vendored dependency instead of requiring a
+# network fetch from the upstream package hook.
+!native/litert_lm/prebuilt/
+!native/litert_lm/prebuilt/**

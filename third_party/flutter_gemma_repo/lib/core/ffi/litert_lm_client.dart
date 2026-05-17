@@ -1,0 +1,1022 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:ffi';
+import 'dart:io';
+import 'dart:isolate';
+
+import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
+
+import 'litert_lm_bindings.dart';
+
+/// Callback typedef with Uint8 for bool (C _Bool = 1 byte)
+typedef _StreamCallbackNative = Void Function(Pointer<Void> callbackData,
+    Pointer<Char> chunk, Uint8 isFinal, Pointer<Char> errorMsg);
+
+/// stream_proxy_create: creates a proxy that strdup's strings before
+/// forwarding to the Dart callback (prevents use-after-free).
+typedef _ProxyCreateNative = Pointer<Void> Function(
+    Pointer<NativeFunction<_StreamCallbackNative>> dartCallback,
+    Pointer<Void> dartData,
+    Pointer<Pointer<NativeFunction<_StreamCallbackNative>>> outProxyFn);
+typedef _ProxyCreateDart = Pointer<Void> Function(
+    Pointer<NativeFunction<_StreamCallbackNative>> dartCallback,
+    Pointer<Void> dartData,
+    Pointer<Pointer<NativeFunction<_StreamCallbackNative>>> outProxyFn);
+
+/// Free a strdup'd string from the proxy callback.
+typedef _ProxyFreeStringNative = Void Function(Pointer<Char> str);
+typedef _ProxyFreeStringDart = void Function(Pointer<Char> str);
+
+/// Experimental 길벗 Android shim:
+/// attaches a LiteRT-LM LoRA sidecar to the opaque SessionConfig before the
+/// ConversationConfig snapshots it. Upstream LiteRT-LM already has the C++
+/// SetScopedLoraFile hook, but flutter_gemma's public C API has no setter yet.
+typedef _SetLoraPathNative = Int32 Function(
+    Pointer<LiteRtLmSessionConfig> config, Pointer<Char> loraPath);
+typedef _SetLoraPathDart = int Function(
+    Pointer<LiteRtLmSessionConfig> config, Pointer<Char> loraPath);
+
+/// High-level Dart wrapper around the LiteRT-LM C API.
+///
+/// Provides a clean async interface over the native C functions,
+/// managing memory and translating C callbacks into Dart Streams.
+class LiteRtLmFfiClient {
+  // Keep the official Conversation API as the default multimodal path.
+  // The lower-level Session API is useful for LoRA plumbing experiments, but
+  // Android LiteRT-LM currently rejects Gemma4 audio content there with code 13.
+  static const bool _useLowLevelSessionForLora = false;
+
+  LiteRtLmBindings? _bindings;
+  // Holding a reference prevents the proxy DynamicLibrary from being GC'd
+  // while function pointers obtained via lookupFunction are still in use.
+  // ignore: unused_field
+  DynamicLibrary? _proxyLib;
+  DynamicLibrary? _loraShimLib;
+  _ProxyCreateDart? _proxyCreate;
+  _ProxyFreeStringDart? _proxyFreeString;
+  _SetLoraPathDart? _setLoraPath;
+  Pointer<LiteRtLmEngine>? _engine;
+  Pointer<LiteRtLmSession>? _session;
+  Pointer<LiteRtLmConversation>? _conversation;
+  bool _isInitialized = false;
+  String? _nativeLogPath;
+
+  /// Reads back the native log file (set by stream_proxy_redirect_stderr) and
+  /// pipes its contents through debugPrint in 800-char chunks. Surfaces
+  /// absl/glog output (model load timing, accelerator init, sampler dlopen,
+  /// KV-cache prefill, etc.) that's redirected to a file by
+  /// [stream_proxy_redirect_stderr] and wouldn't otherwise reach the Flutter
+  /// console / test harness.
+  ///
+  /// Called automatically after every successful and failed engine_create
+  /// (debug builds only) so timing breakdowns are visible in `flutter run`.
+  /// Also exposed publicly via [dumpNativeLog] for callers that want to dump
+  /// at arbitrary points (e.g. after prefill, after a slow generate).
+  ///
+  /// Truncates the log file after reading so subsequent dumps only show new
+  /// output — otherwise every dump would re-print everything since app start.
+  void dumpNativeLog() => _dumpNativeLog();
+
+  void _dumpNativeLog() {
+    final p = _nativeLogPath;
+    if (p == null) return;
+    try {
+      final f = File(p);
+      if (!f.existsSync()) {
+        debugPrint('[LiteRtLmFfi/native] log file missing: $p');
+        return;
+      }
+      final content = f.readAsStringSync();
+      if (content.isEmpty) {
+        debugPrint('[LiteRtLmFfi/native] (no new native log output)');
+        return;
+      }
+      debugPrint(
+          '[LiteRtLmFfi/native] === BEGIN native log ($p, ${content.length} bytes) ===');
+      const chunkSize = 800;
+      for (var i = 0; i < content.length; i += chunkSize) {
+        final end =
+            (i + chunkSize < content.length) ? i + chunkSize : content.length;
+        debugPrint(content.substring(i, end));
+      }
+      debugPrint('[LiteRtLmFfi/native] === END native log ===');
+      // Truncate so the next dump only shows new output. If truncation fails
+      // (read-only fs etc.), next dump just re-prints — non-fatal.
+      try {
+        f.writeAsStringSync('');
+      } catch (_) {}
+    } catch (e) {
+      debugPrint('[LiteRtLmFfi/native] failed to read $p: $e');
+    }
+  }
+
+  bool get isInitialized => _isInitialized;
+
+  /// Path to the redirected native stderr log (LiteRT-LM absl/glog output).
+  /// Set after [_ensureBindings] runs the stderr redirect; null on platforms
+  /// where redirection isn't wired (currently it works on macOS + iOS).
+  String? get nativeLogPath => _nativeLogPath;
+
+  /// Load the native library and create bindings.
+  void _ensureBindings() {
+    if (_bindings != null) return;
+
+    final loadSw = Stopwatch()..start();
+    debugPrint('[LiteRtLmFfi] Loading native libraries...');
+    final DynamicLibrary lib;
+    final DynamicLibrary proxyLib;
+    if (Platform.isIOS) {
+      // On iOS, Native Assets bundles dylibs in Frameworks/ inside Runner.app.
+      // The host app's Xcode project must also copy raw lib*.dylib files
+      // alongside the .framework bundles (see "Setup LiteRT-LM iOS" build
+      // phase in example/ios/Runner.xcodeproj/project.pbxproj) — needed
+      // because gpu_registry.cc uses relative-basename dlopen which iOS
+      // dyld 4 cannot resolve from .framework names alone.
+      lib = DynamicLibrary.open(
+          '@executable_path/Frameworks/LiteRtLm.framework/LiteRtLm');
+      proxyLib = DynamicLibrary.open(
+          '@executable_path/Frameworks/StreamProxy.framework/StreamProxy');
+    } else if (Platform.isMacOS) {
+      lib = DynamicLibrary.open('LiteRtLm.framework/LiteRtLm');
+      proxyLib = DynamicLibrary.open('StreamProxy.framework/StreamProxy');
+    } else if (Platform.isLinux) {
+      // Load order matters: libLiteRt.so must be loaded first with
+      // RTLD_GLOBAL so libLiteRtLm.so (built with litert_link_capi_so=true)
+      // and the WebGPU accelerator can resolve LiteRt* C API symbols
+      // against it. StreamProxy exposes a dlopen helper because Dart's
+      // DynamicLibrary.open uses RTLD_LOCAL which hides symbols.
+      //
+      // Native Assets places .so files in <bundle>/lib/. Dart's
+      // DynamicLibrary.open finds them by basename via Flutter-set RPATH,
+      // but a raw C dlopen via stream_proxy_load_global doesn't see that
+      // path — pass an absolute path so it resolves regardless of
+      // LD_LIBRARY_PATH / RPATH inheritance.
+      final libDir = '${File(Platform.resolvedExecutable).parent.path}/lib';
+      proxyLib = DynamicLibrary.open('libStreamProxy.so');
+      final loadGlobal = proxyLib.lookupFunction<
+          Pointer Function(Pointer<Utf8>),
+          Pointer Function(Pointer<Utf8>)>('stream_proxy_load_global');
+      // Preload sequence:
+      // - libLiteRt.so first (provides LiteRt C API used by the WebGPU
+      //   accelerator at registration)
+      // - libGemmaModelConstraintProvider.so (libLiteRtLm.so has a
+      //   SONAME-level dependency on it)
+      // - libLiteRtWebGpuAccelerator.so so gpu_registry.cc:162 can find it
+      //   via the loader's already-loaded modules table when it does
+      //   basename-only dlopen
+      // - libLiteRtLm.so itself
+      //
+      // libLiteRtTopKWebGpuSampler.so is intentionally NOT preloaded:
+      // its Create() holds a process-static wgpu::Instance and rejects
+      // any second engine_create with `wgpu::Instance already set`,
+      // making model swap and multi-session tests impossible. With the
+      // sampler not preloaded, sampler_factory.cc:443's dlopen returns
+      // Unavailable and the factory falls back to the static / CPU
+      // sampler chain — inference itself still runs on the GPU
+      // accelerator, only the per-token argmax happens on CPU
+      // (negligible perf hit, ~1-5ms/token).
+      for (final name in const [
+        'libLiteRt.so',
+        'libGemmaModelConstraintProvider.so',
+        'libLiteRtWebGpuAccelerator.so',
+        'libLiteRtLm.so',
+      ]) {
+        final fullPath = '$libDir/$name';
+        final pathPtr = fullPath.toNativeUtf8();
+        final handle = loadGlobal(pathPtr);
+        calloc.free(pathPtr);
+        if (handle == nullptr) {
+          throw Exception('Failed to load $fullPath with RTLD_GLOBAL');
+        }
+      }
+      lib = DynamicLibrary.open('libLiteRtLm.so');
+    } else if (Platform.isWindows) {
+      // Preload LiteRt.dll first so the WebGPU accelerator and TopK sampler
+      // can resolve LiteRt* C API + their own exports through the process
+      // module list before sampler_factory does its LoadLibrary lookup
+      // (mirrors the Linux/Android RTLD_GLOBAL pattern).
+      proxyLib = DynamicLibrary.open('StreamProxy.dll');
+      final loadGlobal = proxyLib.lookupFunction<
+          Pointer Function(Pointer<Utf8>),
+          Pointer Function(Pointer<Utf8>)>('stream_proxy_load_global');
+      for (final name in const [
+        'LiteRt.dll',
+        'libLiteRtTopKWebGpuSampler.dll',
+        'libLiteRtWebGpuAccelerator.dll',
+        'LiteRtLm.dll',
+      ]) {
+        final pathPtr = name.toNativeUtf8();
+        final handle = loadGlobal(pathPtr);
+        calloc.free(pathPtr);
+        if (handle == nullptr) {
+          throw Exception('Failed to preload $name (LoadLibraryEx)');
+        }
+      }
+      lib = DynamicLibrary.open('LiteRtLm.dll');
+    } else if (Platform.isAndroid) {
+      // LiteRT-LM ships native libs only for android_arm64 — bail with a
+      // typed message before dlopen surfaces a generic ENOENT on x86_64
+      // emulators / armeabi-v7a devices (#250). MediaPipe `.task` text
+      // inference still works on those ABIs through the Kotlin path; only
+      // `.litertlm` (FFI) requires arm64.
+      if (Abi.current() != Abi.androidArm64) {
+        throw UnsupportedError(
+          'flutter_gemma .litertlm models require an arm64-v8a Android device '
+          '(got ${Abi.current()}). Use a `.task` MediaPipe model on this ABI '
+          'or run on an arm64-v8a device / Apple Silicon emulator.',
+        );
+      }
+      // Load StreamProxy first (it has stream_proxy_load_global helper)
+      proxyLib = DynamicLibrary.open('libStreamProxy.so');
+      // Load LiteRtLm with RTLD_GLOBAL so GPU accelerator plugins
+      // can find LiteRt* symbols via dlsym(RTLD_DEFAULT).
+      // Dart's DynamicLibrary.open uses RTLD_LOCAL which hides symbols.
+      final loadGlobal = proxyLib.lookupFunction<
+          Pointer Function(Pointer<Utf8>),
+          Pointer Function(Pointer<Utf8>)>('stream_proxy_load_global');
+      final pathPtr = 'libLiteRtLm.so'.toNativeUtf8();
+      final handle = loadGlobal(pathPtr);
+      calloc.free(pathPtr);
+      if (handle == nullptr) {
+        throw Exception('Failed to load libLiteRtLm.so with RTLD_GLOBAL');
+      }
+      lib = DynamicLibrary.open('libLiteRtLm.so'); // Now symbols are global
+    } else {
+      throw UnsupportedError(
+          'Platform not supported for FFI: ${Platform.operatingSystem}');
+    }
+
+    _bindings = LiteRtLmBindings(lib);
+    _proxyLib = proxyLib;
+    _proxyCreate =
+        proxyLib.lookupFunction<_ProxyCreateNative, _ProxyCreateDart>(
+            'stream_proxy_create');
+    _proxyFreeString =
+        proxyLib.lookupFunction<_ProxyFreeStringNative, _ProxyFreeStringDart>(
+            'stream_proxy_free_string');
+
+    // DEBUG-only: redirect native stderr to a file so we can dump absl/glog
+    // output through debugPrint after engine_create failure. Skipped in
+    // release builds — production users see crashes via os_log/Crashlytics
+    // streams (or systemd journal on Linux); redirecting stderr would
+    // silently swallow those.
+    //
+    // Linux: flutter test does not surface child-process stderr, so without
+    // this Linux integration tests get the same opaque 'Failed to create
+    // engine' as iOS without any native diagnostics.
+    if (kDebugMode &&
+        (Platform.isIOS || Platform.isLinux || Platform.isMacOS)) {
+      _nativeLogPath = '${Directory.systemTemp.path}/litertlm_native.log';
+      final redirect = proxyLib.lookupFunction<Int32 Function(Pointer<Utf8>),
+          int Function(Pointer<Utf8>)>('stream_proxy_redirect_stderr');
+      final pathPtr = _nativeLogPath!.toNativeUtf8();
+      final rc = redirect(pathPtr);
+      calloc.free(pathPtr);
+      if (rc != 0) {
+        // Log capture is best-effort but its failure makes _dumpNativeLog
+        // useless. Surface it instead of silently continuing.
+        debugPrint('[LiteRtLmFfi] WARNING: stderr redirect failed (rc=$rc) — '
+            'native log dumps will be empty');
+        _nativeLogPath = null;
+      } else {
+        debugPrint('[LiteRtLmFfi] stderr redirected to $_nativeLogPath');
+      }
+    }
+
+    debugPrint(
+        '[LiteRtLmFfi/perf] _ensureBindings total: ${loadSw.elapsedMilliseconds}ms');
+    debugPrint('[LiteRtLmFfi] Libraries loaded');
+  }
+
+  void _ensureLoraShim() {
+    if (!Platform.isAndroid) {
+      throw UnsupportedError(
+        'LoRA sidecar injection for .litertlm is currently wired only on '
+        'Android, because it depends on the packaged gilbeot native shim.',
+      );
+    }
+    if (_setLoraPath != null) return;
+
+    try {
+      final lib = DynamicLibrary.open('libgilbeot_litertlm_lora.so');
+      _setLoraPath = lib.lookupFunction<_SetLoraPathNative, _SetLoraPathDart>(
+        'gilbeot_litertlm_session_config_set_lora_path',
+      );
+      _loraShimLib = lib;
+      debugPrint('[LiteRtLmFfi] Gilbeot LoRA shim loaded');
+    } catch (e) {
+      throw StateError(
+        'Failed to load Gilbeot LiteRT-LM LoRA shim. '
+        'Make sure app/android/app/src/main/cpp is built and packaged. '
+        'Original error: $e',
+      );
+    }
+  }
+
+  /// Initialize the engine with model path and settings.
+  Future<void> initialize({
+    required String modelPath,
+    String backend = 'gpu',
+    int maxTokens = 2048,
+    String? cacheDir,
+    bool enableVision = false,
+    int maxNumImages = 0,
+    bool enableAudio = false,
+    // Gemma 4 MTP / speculative decoding. The shipped libLiteRtLm.so exports
+    // litert_lm_engine_settings_set_enable_speculative_decoding and bundles
+    // the MTP runtime; upstream flutter_gemma just never called it (default
+    // off). Lossless: the drafter proposes tokens, the (LoRA'd) main LM
+    // verifies.
+    //
+    // null (default) = auto-decide based on backend: GPU/NPU → on (S23 GPU
+    // measured 1.5x decode speedup, FU101); CPU → off (S10e CPU A/B per
+    // FU104 — drafter forward-pass overhead not offset by acceptance, net
+    // ~10-15s slowdown vs MTP-off).
+    bool? enableSpeculativeDecoding,
+  }) async {
+    final initSw = Stopwatch()..start();
+    _ensureBindings();
+    final bindingsMs = initSw.elapsedMilliseconds;
+    debugPrint('[LiteRtLmFfi/perf] _ensureBindings: ${bindingsMs}ms');
+    final b = _bindings!;
+
+    // Create engine settings
+    final modelPathPtr = modelPath.toNativeUtf8();
+    final backendPtr = backend.toNativeUtf8();
+    final visionBackendPtr = enableVision ? backend.toNativeUtf8() : nullptr;
+    final audioBackendPtr = enableAudio ? 'cpu'.toNativeUtf8() : nullptr;
+
+    try {
+      final settingsCreateStart = initSw.elapsedMilliseconds;
+      final settings = b.litert_lm_engine_settings_create(
+        modelPathPtr.cast(),
+        backendPtr.cast(),
+        visionBackendPtr == nullptr ? nullptr : visionBackendPtr.cast(),
+        audioBackendPtr == nullptr ? nullptr : audioBackendPtr.cast(),
+      );
+      debugPrint(
+          '[LiteRtLmFfi/perf] settings_create: ${initSw.elapsedMilliseconds - settingsCreateStart}ms');
+
+      if (settings == nullptr) {
+        throw Exception('Failed to create engine settings');
+      }
+
+      // Configure settings
+      b.litert_lm_engine_settings_set_max_num_tokens(settings, maxTokens);
+
+      if (cacheDir != null) {
+        final cacheDirPtr = cacheDir.toNativeUtf8();
+        // Sets cache dir on main, vision, and audio executors (C API patched)
+        b.litert_lm_engine_settings_set_cache_dir(settings, cacheDirPtr.cast());
+        calloc.free(cacheDirPtr);
+      }
+
+      if (maxNumImages > 0) {
+        b.litert_lm_engine_settings_set_max_num_images(settings, maxNumImages);
+      }
+
+      // Gemma 4 MTP / speculative decoding — directly targets the ~17-18s
+      // decode bottleneck without touching prompt or image quality.
+      // Auto-disabled on CPU backend (FU104): drafter overhead > acceptance
+      // gain on S10e CPU. Explicit param overrides the auto-decision.
+      final enableSpec = enableSpeculativeDecoding ?? (backend != 'cpu');
+      b.litert_lm_engine_settings_set_enable_speculative_decoding(
+          settings, enableSpec);
+      debugPrint(
+          '[LiteRtLmFfi] speculative decoding (Gemma 4 MTP): $enableSpec '
+          '(backend=$backend, override=$enableSpeculativeDecoding)');
+
+      // Create engine in a background isolate to avoid blocking UI.
+      // Pass settings pointer as int address (Pointer can't cross isolates).
+      debugPrint(
+          '[LiteRtLmFfi] Creating engine from $modelPath (backend=$backend, maxTokens=$maxTokens) ...');
+      debugPrint(
+          '[LiteRtLmFfi/perf] === START litert_lm_engine_create (native — model load + accelerator init + KV cache prefill) ===');
+      final settingsAddr = settings.address;
+      final sw = Stopwatch()..start();
+      final engineAddr = await Isolate.run(() {
+        final isolateSw = Stopwatch()..start();
+        final lib = Platform.isIOS
+            ? DynamicLibrary.open(
+                '@executable_path/Frameworks/LiteRtLm.framework/LiteRtLm')
+            : Platform.isMacOS
+                ? DynamicLibrary.open('LiteRtLm.framework/LiteRtLm')
+                : (Platform.isLinux || Platform.isAndroid)
+                    ? DynamicLibrary.open('libLiteRtLm.so')
+                    : DynamicLibrary.open('LiteRtLm.dll');
+        // ignore: avoid_print
+        print(
+            '[LiteRtLmFfi/perf]   isolate: DynamicLibrary.open: ${isolateSw.elapsedMilliseconds}ms');
+        final lookupStart = isolateSw.elapsedMilliseconds;
+        final create = lib.lookupFunction<Pointer Function(Pointer),
+            Pointer Function(Pointer)>('litert_lm_engine_create');
+        // ignore: avoid_print
+        print(
+            '[LiteRtLmFfi/perf]   isolate: lookupFunction: ${isolateSw.elapsedMilliseconds - lookupStart}ms');
+        final createStart = isolateSw.elapsedMilliseconds;
+        final ptr = create(Pointer.fromAddress(settingsAddr)).address;
+        // ignore: avoid_print
+        print(
+            '[LiteRtLmFfi/perf]   isolate: native litert_lm_engine_create: ${isolateSw.elapsedMilliseconds - createStart}ms');
+        return ptr;
+      });
+      _engine = Pointer<LiteRtLmEngine>.fromAddress(engineAddr);
+      sw.stop();
+      debugPrint(
+          '[LiteRtLmFfi/perf] === END litert_lm_engine_create: ${sw.elapsedMilliseconds}ms (includes isolate spawn ~50-200ms) ===');
+      debugPrint(
+          '[LiteRtLmFfi] litert_lm_engine_create took ${sw.elapsedMilliseconds}ms');
+      b.litert_lm_engine_settings_delete(settings);
+
+      if (_engine == null || _engine == nullptr) {
+        _dumpNativeLog();
+        throw Exception(
+            'Failed to create engine. Model may be invalid: $modelPath');
+      }
+
+      _isInitialized = true;
+      debugPrint(
+          '[LiteRtLmFfi/perf] initialize() total: ${initSw.elapsedMilliseconds}ms');
+      debugPrint('[LiteRtLmFfi] Engine initialized successfully');
+
+      // Auto-dump the SDK's stderr log after successful engine_create so
+      // users can see what happens inside the native call (model load time,
+      // accelerator init, sampler dlopen attempts, KV cache prefill, etc.).
+      // No-op when stderr redirection isn't wired (release / Android /
+      // Windows). Safe to call before _isInitialized was true since the
+      // dump only reads a file, doesn't touch native state.
+      _dumpNativeLog();
+    } finally {
+      calloc.free(modelPathPtr);
+      calloc.free(backendPtr);
+      if (visionBackendPtr != nullptr) calloc.free(visionBackendPtr);
+      if (audioBackendPtr != nullptr) calloc.free(audioBackendPtr);
+    }
+  }
+
+  /// Create a new conversation with optional system message and tools.
+  void createConversation({
+    String? systemMessage,
+    String? toolsJson,
+    double temperature = 0.8,
+    int topK = 40,
+    double? topP,
+    int seed = 1,
+    String? loraPath,
+  }) {
+    _assertInitialized();
+    final b = _bindings!;
+
+    // Close existing conversation if any
+    if (_conversation != null && _conversation != nullptr) {
+      b.litert_lm_conversation_delete(_conversation!);
+      _conversation = null;
+    }
+    if (_session != null && _session != nullptr) {
+      b.litert_lm_session_delete(_session!);
+      _session = null;
+    }
+
+    // Always build a sessionConfig with the caller's sampler params — even
+    // when there's no systemMessage/tools. Otherwise temperature, topK,
+    // topP, and seed get silently dropped on the floor and the model
+    // falls back to its baked-in defaults (typically greedy), making
+    // every call ignore stochastic decoding requests.
+    //
+    // This requires a patched libLiteRtLm.{so,dylib,dll} where
+    // litert_lm_conversation_config_create accepts the 6-arg overload
+    // and applies session_config via the upstream setter chain. See
+    // native/litert_lm/patch_c_api.sh ("PATCH: 6-arg overload").
+    final sessionConfig = b.litert_lm_session_config_create();
+
+    final samplerParams = calloc<LiteRtLmSamplerParams>();
+    // Upstream LiteRT-LM (commit 5e0d86b) only implements TopP sampling at
+    // engine level — sampler type 1 (TopK) and 3 (Greedy) are rejected with
+    // "UNIMPLEMENTED: Sampler type: N not implemented yet." Use TopP (=2)
+    // unconditionally and pass top_k as a hint; native respects both fields
+    // even though it's gated by the type tag.
+    samplerParams.ref.typeAsInt = 2; // always TopP
+    samplerParams.ref.top_k = topK;
+    samplerParams.ref.top_p = topP ?? 0.95;
+    samplerParams.ref.temperature = temperature;
+    samplerParams.ref.seed = seed;
+    b.litert_lm_session_config_set_sampler_params(sessionConfig, samplerParams);
+    calloc.free(samplerParams);
+
+    Pointer<Utf8>? loraPathPtr;
+    if (loraPath != null && loraPath.isNotEmpty) {
+      _ensureLoraShim();
+      loraPathPtr = loraPath.toNativeUtf8();
+      final rc = _setLoraPath!(sessionConfig, loraPathPtr.cast());
+      if (rc != 0) {
+        calloc.free(loraPathPtr);
+        throw Exception(
+          'Failed to attach LiteRT-LM LoRA sidecar '
+          '(rc=$rc, loraPath=$loraPath)',
+        );
+      }
+      debugPrint('[LiteRtLmFfi] LoRA sidecar attached: $loraPath');
+    }
+
+    final systemPtr = systemMessage?.toNativeUtf8();
+    final toolsPtr = toolsJson?.toNativeUtf8();
+
+    if (_useLowLevelSessionForLora &&
+        loraPath != null &&
+        loraPath.isNotEmpty) {
+      final Pointer<LiteRtLmSession> session =
+          b.litert_lm_engine_create_session(_engine!, sessionConfig);
+      if (session == nullptr) {
+        _dumpNativeLog();
+        throw Exception(
+          'litert_lm_engine_create_session returned null '
+          '(loraPath=$loraPath)',
+        );
+      }
+      _session = session;
+      debugPrint('[LiteRtLmFfi] Low-level session created with LoRA sidecar');
+
+      b.litert_lm_session_config_delete(sessionConfig);
+      if (loraPathPtr != null) calloc.free(loraPathPtr);
+      if (systemPtr != null) calloc.free(systemPtr);
+      if (toolsPtr != null) calloc.free(toolsPtr);
+      return;
+    }
+
+    final Pointer<LiteRtLmConversationConfig> convConfig =
+        b.litert_lm_conversation_config_create(
+      _engine!,
+      sessionConfig,
+      systemPtr?.cast() ?? nullptr,
+      toolsPtr?.cast() ?? nullptr,
+      nullptr,
+      toolsJson != null,
+    );
+
+    b.litert_lm_session_config_delete(sessionConfig);
+    if (loraPathPtr != null) calloc.free(loraPathPtr);
+    if (systemPtr != null) calloc.free(systemPtr);
+    if (toolsPtr != null) calloc.free(toolsPtr);
+
+    if (convConfig == nullptr) {
+      throw Exception(
+        'litert_lm_conversation_config_create returned null '
+        '(systemMessage=${systemMessage != null}, tools=${toolsJson != null}, '
+        'temperature=$temperature, topK=$topK, topP=$topP)',
+      );
+    }
+
+    _conversation = b.litert_lm_conversation_create(_engine!, convConfig);
+
+    b.litert_lm_conversation_config_delete(convConfig);
+
+    if (_conversation == null || _conversation == nullptr) {
+      _dumpNativeLog();
+      throw Exception('Failed to create conversation');
+    }
+
+    debugPrint('[LiteRtLmFfi] Conversation created');
+  }
+
+  /// Build the JSON message for the Conversation API.
+  ///
+  /// Format: `{"role": "user", "content": [{"type": "text", "text": "..."}]}`
+  static String buildMessageJson(String text,
+      {Uint8List? imageBytes, Uint8List? audioBytes}) {
+    final content = <Map<String, dynamic>>[];
+    if (imageBytes != null) {
+      content.add({
+        'type': 'image',
+        'blob': base64Encode(imageBytes),
+      });
+    }
+    if (audioBytes != null) {
+      content.add({
+        'type': 'audio',
+        'blob': base64Encode(audioBytes),
+      });
+    }
+    content.add({'type': 'text', 'text': text});
+    return jsonEncode({'role': 'user', 'content': content});
+  }
+
+  /// Extract text from a LiteRT-LM JSON response chunk.
+  ///
+  /// Handles two response formats:
+  /// - Text: `{"role":"assistant","content":[{"type":"text","text":"hello"}]}`
+  ///   → returns `"hello"`
+  /// - Thinking: `{"role":"assistant","channels":{"thought":"reasoning..."}}`
+  ///   → returns `<|channel>thought\nreasoning...<channel|>`
+  ///   (compatible with ThinkingFilter in extensions.dart)
+  static String extractTextFromResponse(String jsonStr) {
+    final Map<String, dynamic> json;
+    try {
+      json = jsonDecode(jsonStr) as Map<String, dynamic>;
+    } on FormatException {
+      // Partial / non-JSON chunks pass through verbatim. This is the only
+      // shape we want to be permissive about — any other parse error
+      // (TypeError, RangeError, etc.) signals a real contract change with
+      // LiteRT-LM and must surface, not be silently swallowed.
+      return jsonStr;
+    }
+
+    // Check for thinking channels first
+    final channels = json['channels'] as Map<String, dynamic>?;
+    if (channels != null) {
+      final thought = channels['thought'] as String?;
+      if (thought != null && thought.isNotEmpty) {
+        return '<|channel>thought\n$thought<channel|>';
+      }
+    }
+
+    // Regular text content
+    final content = json['content'] as List<dynamic>?;
+    if (content == null) return jsonStr;
+    final buffer = StringBuffer();
+    for (final item in content) {
+      if (item is Map<String, dynamic> && item['type'] == 'text') {
+        buffer.write(item['text'] as String? ?? '');
+      }
+    }
+    return buffer.toString();
+  }
+
+  /// Send a message and get streaming response as plain text chunks.
+  Stream<String> chat(
+    String text, {
+    Uint8List? imageBytes,
+    Uint8List? audioBytes,
+    bool enableThinking = false,
+  }) {
+    if (_useLowLevelSessionForLora &&
+        _session != null &&
+        _session != nullptr) {
+      return sendContentStreamRaw(
+        text,
+        imageBytes: imageBytes,
+        audioBytes: audioBytes,
+      ).map(extractTextFromResponse);
+    }
+    final messageJson =
+        buildMessageJson(text, imageBytes: imageBytes, audioBytes: audioBytes);
+    final extraContext = enableThinking ? '{"enable_thinking": true}' : null;
+    return sendMessageStreamRaw(messageJson, extraContext: extraContext)
+        .map(extractTextFromResponse);
+  }
+
+  /// Same as [chat] but yields raw SDK JSON chunks without `extractTextFromResponse`
+  /// mapping. Required by Gemma 4 path so callers can read the structured
+  /// `tool_calls` field via [extractToolCalls].
+  Stream<String> chatRaw(
+    String text, {
+    Uint8List? imageBytes,
+    Uint8List? audioBytes,
+    bool enableThinking = false,
+  }) {
+    if (_useLowLevelSessionForLora &&
+        _session != null &&
+        _session != nullptr) {
+      return sendContentStreamRaw(
+        text,
+        imageBytes: imageBytes,
+        audioBytes: audioBytes,
+      );
+    }
+    final messageJson =
+        buildMessageJson(text, imageBytes: imageBytes, audioBytes: audioBytes);
+    final extraContext = enableThinking ? '{"enable_thinking": true}' : null;
+    return sendMessageStreamRaw(messageJson, extraContext: extraContext);
+  }
+
+  /// Send multimodal content through the lower-level Session API.
+  ///
+  /// This path is used when a LoRA sidecar is active. The Conversation API
+  /// accepts the same SessionConfig object, but the current Android LiteRT-LM
+  /// build does not appear to route ScopedLoraFile into actual LoRA input
+  /// buffers there. The Session API is closer to Engine::CreateSession(config).
+  Stream<String> sendContentStreamRaw(
+    String text, {
+    Uint8List? imageBytes,
+    Uint8List? audioBytes,
+  }) {
+    _assertInitialized();
+    if (_session == null || _session == nullptr) {
+      throw StateError('No low-level session. Call createConversation first.');
+    }
+    final b = _bindings!;
+
+    final controller = StreamController<String>();
+    final allocated = <Pointer<Void>>[];
+
+    Pointer<Void> allocBytes(Uint8List bytes) {
+      final ptr = calloc<Uint8>(bytes.length);
+      ptr.asTypedList(bytes.length).setAll(0, bytes);
+      final out = ptr.cast<Void>();
+      allocated.add(out);
+      return out;
+    }
+
+    final inputItems = <({InputDataType type, Pointer<Void> data, int size})>[];
+    if (text.isNotEmpty) {
+      final textPtr = text.toNativeUtf8();
+      allocated.add(textPtr.cast<Void>());
+      inputItems.add((
+        type: InputDataType.kInputText,
+        data: textPtr.cast<Void>(),
+        size: utf8.encode(text).length
+      ));
+    }
+    if (imageBytes != null) {
+      inputItems.add((
+        type: InputDataType.kInputImage,
+        data: allocBytes(imageBytes),
+        size: imageBytes.length
+      ));
+      inputItems.add((
+        type: InputDataType.kInputImageEnd,
+        data: nullptr,
+        size: 0
+      ));
+    }
+    if (audioBytes != null) {
+      inputItems.add((
+        type: InputDataType.kInputAudio,
+        data: allocBytes(audioBytes),
+        size: audioBytes.length
+      ));
+    }
+
+    final inputs = calloc<InputData>(inputItems.length);
+    for (var i = 0; i < inputItems.length; i++) {
+      final item = inputItems[i];
+      inputs[i].typeAsInt = item.type.value;
+      inputs[i].data = item.data;
+      inputs[i].size = item.size;
+    }
+
+    var freed = false;
+    void freeAll() {
+      if (freed) return;
+      freed = true;
+      calloc.free(inputs);
+      for (final ptr in allocated) {
+        if (ptr != nullptr) calloc.free(ptr);
+      }
+    }
+
+    late final NativeCallable<_StreamCallbackNative> callable;
+    callable = NativeCallable<_StreamCallbackNative>.listener(
+      (Pointer<Void> data, Pointer<Char> chunk, int isFinal,
+          Pointer<Char> errorMsg) {
+        if (errorMsg != nullptr && errorMsg.address != 0) {
+          final error = errorMsg.cast<Utf8>().toDartString();
+          _proxyFreeString!(errorMsg);
+          if (error.startsWith('CANCELLED')) {
+            controller.close();
+          } else {
+            controller.addError(Exception('Session stream error: $error'));
+            controller.close();
+          }
+          callable.close();
+          freeAll();
+          return;
+        }
+
+        if (chunk != nullptr && chunk.address != 0) {
+          final text = chunk.cast<Utf8>().toDartString();
+          _proxyFreeString!(chunk);
+          if (text.isNotEmpty) {
+            controller.add(text);
+          }
+        }
+
+        if (isFinal != 0) {
+          controller.close();
+          callable.close();
+          freeAll();
+        }
+      },
+    );
+
+    final outProxyFn = calloc<Pointer<NativeFunction<_StreamCallbackNative>>>();
+    final proxyData = _proxyCreate!(
+      callable.nativeFunction,
+      nullptr,
+      outProxyFn,
+    );
+    final proxyFn = outProxyFn.value;
+    calloc.free(outProxyFn);
+
+    final result = b.litert_lm_session_generate_content_stream(
+      _session!,
+      inputs,
+      inputItems.length,
+      proxyFn.cast(),
+      proxyData,
+    );
+
+    if (result != 0) {
+      debugPrint(
+        '[LiteRtLmFfi] Session streaming failed (code: $result); '
+        'trying non-streaming generate_content',
+      );
+      final responses = b.litert_lm_session_generate_content(
+        _session!,
+        inputs,
+        inputItems.length,
+      );
+      if (responses != nullptr) {
+        final count = b.litert_lm_responses_get_num_candidates(responses);
+        for (var i = 0; i < count; i++) {
+          final textPtr =
+              b.litert_lm_responses_get_response_text_at(responses, i);
+          if (textPtr != nullptr) {
+            final text = textPtr.cast<Utf8>().toDartString();
+            if (text.isNotEmpty) controller.add(text);
+          }
+        }
+        b.litert_lm_responses_delete(responses);
+        controller.close();
+      } else {
+        controller.addError(
+            Exception('Failed to start session streaming (code: $result)'));
+        controller.close();
+      }
+      callable.close();
+      freeAll();
+    }
+
+    return controller.stream;
+  }
+
+  /// Send a raw JSON message and get streaming response.
+  Stream<String> sendMessageStreamRaw(String messageJson,
+      {String? extraContext}) {
+    _assertInitialized();
+    _assertConversation();
+    final b = _bindings!;
+
+    final controller = StreamController<String>();
+
+    final messagePtr = messageJson.toNativeUtf8();
+    final extraPtr =
+        extraContext != null ? extraContext.toNativeUtf8() : nullptr;
+
+    // NativeCallable.listener is thread-safe — the callback can be
+    // invoked from the native background thread that LiteRT-LM uses
+    // for streaming, and Dart will marshal it to the right isolate.
+    // Dart callback — receives heap-copied strings from proxy
+    late final NativeCallable<_StreamCallbackNative> callable;
+    callable = NativeCallable<_StreamCallbackNative>.listener(
+      (Pointer<Void> data, Pointer<Char> chunk, int isFinal,
+          Pointer<Char> errorMsg) {
+        if (errorMsg != nullptr && errorMsg.address != 0) {
+          final error = errorMsg.cast<Utf8>().toDartString();
+          _proxyFreeString!(errorMsg); // free strdup'd string
+          // stopGeneration() (and any other caller-initiated cancel) surfaces
+          // here as a CANCELLED error from native. That's not an error from
+          // the API consumer's perspective — the stream just stops cleanly
+          // at whatever token was last delivered.
+          if (error.startsWith('CANCELLED')) {
+            controller.close();
+          } else {
+            controller.addError(Exception('Stream error: $error'));
+            controller.close();
+          }
+          callable.close();
+          calloc.free(messagePtr);
+          if (extraPtr != nullptr) calloc.free(extraPtr);
+          return;
+        }
+
+        if (chunk != nullptr && chunk.address != 0) {
+          final text = chunk.cast<Utf8>().toDartString();
+          _proxyFreeString!(chunk); // free strdup'd string
+          if (text.isNotEmpty) {
+            controller.add(text);
+          }
+        }
+
+        if (isFinal != 0) {
+          controller.close();
+          callable.close();
+          calloc.free(messagePtr);
+          if (extraPtr != nullptr) calloc.free(extraPtr);
+        }
+      },
+    );
+
+    // Create proxy that strdup's strings before forwarding to Dart callback
+    final outProxyFn = calloc<Pointer<NativeFunction<_StreamCallbackNative>>>();
+    final proxyData = _proxyCreate!(
+      callable.nativeFunction,
+      nullptr,
+      outProxyFn,
+    );
+    final proxyFn = outProxyFn.value;
+    calloc.free(outProxyFn);
+
+    final result = b.litert_lm_conversation_send_message_stream(
+      _conversation!,
+      messagePtr.cast(),
+      extraPtr == nullptr ? nullptr : extraPtr.cast(),
+      proxyFn.cast(),
+      proxyData,
+    );
+
+    if (result != 0) {
+      controller
+          .addError(Exception('Failed to start streaming (code: $result)'));
+      controller.close();
+      callable.close();
+      calloc.free(messagePtr);
+      if (extraPtr != nullptr) calloc.free(extraPtr);
+    }
+
+    return controller.stream;
+  }
+
+  /// Send a text message and get the full response (sync C API, non-blocking Dart).
+  Future<String> sendMessage(String messageJson, {String? extraContext}) async {
+    _assertInitialized();
+    _assertConversation();
+    final b = _bindings!;
+
+    final messagePtr = messageJson.toNativeUtf8();
+    final extraPtr =
+        extraContext != null ? extraContext.toNativeUtf8() : nullptr;
+
+    try {
+      final response = b.litert_lm_conversation_send_message(
+        _conversation!,
+        messagePtr.cast(),
+        extraPtr == nullptr ? nullptr : extraPtr.cast(),
+      );
+
+      if (response == nullptr) {
+        throw Exception('send_message returned null');
+      }
+
+      final strPtr = b.litert_lm_json_response_get_string(response);
+      final result =
+          strPtr == nullptr ? '' : strPtr.cast<Utf8>().toDartString();
+      b.litert_lm_json_response_delete(response);
+      return result;
+    } finally {
+      calloc.free(messagePtr);
+      if (extraPtr != nullptr) calloc.free(extraPtr);
+    }
+  }
+
+  /// Cancel ongoing generation.
+  void cancelGeneration() {
+    if (_conversation != null &&
+        _conversation != nullptr &&
+        _bindings != null) {
+      _bindings!.litert_lm_conversation_cancel_process(_conversation!);
+      debugPrint('[LiteRtLmFfi] Generation cancelled');
+    }
+  }
+
+  /// Close the current conversation.
+  void closeConversation() {
+    if (_session != null && _session != nullptr && _bindings != null) {
+      _bindings!.litert_lm_session_delete(_session!);
+      _session = null;
+      debugPrint('[LiteRtLmFfi] Low-level session closed');
+    }
+    if (_conversation != null &&
+        _conversation != nullptr &&
+        _bindings != null) {
+      _bindings!.litert_lm_conversation_delete(_conversation!);
+      _conversation = null;
+      debugPrint('[LiteRtLmFfi] Conversation closed');
+    }
+  }
+
+  /// Shutdown the engine and release all resources.
+  void shutdown() {
+    closeConversation();
+
+    if (_engine != null && _engine != nullptr && _bindings != null) {
+      _bindings!.litert_lm_engine_delete(_engine!);
+      _engine = null;
+      debugPrint('[LiteRtLmFfi] Engine deleted');
+    }
+
+    _isInitialized = false;
+  }
+
+  void _assertInitialized() {
+    if (!_isInitialized || _engine == null || _engine == nullptr) {
+      throw StateError('Engine not initialized. Call initialize() first.');
+    }
+  }
+
+  void _assertConversation() {
+    if (_conversation == null || _conversation == nullptr) {
+      throw StateError('No conversation. Call createConversation() first.');
+    }
+  }
+}

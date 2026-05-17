@@ -1,0 +1,101 @@
+name: gilbeot
+description: 어르신을 위한 멀티모달 AI 길안내 도우미 - Gemma 4 Good Hackathon
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.11.0 <4.0.0'
+  flutter: '>=3.38.4'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Gemma 4 on-device inference. Release/demo behavior depends on the
+  # patched 0.14.5 fork wired below in dependency_overrides.
+  flutter_gemma: ^0.14.5
+
+  # HTTP
+  dio: ^5.7.0
+  http: ^1.2.0
+
+  # Camera + audio capture
+  camera: ^0.11.0
+  record: ^6.0.0
+  permission_handler: ^11.3.0
+
+  # WAV asset playback (DEMO_MODE: judge demo plays the bundled Korean
+  # destination-intent recording before feeding it to Gemma audio STT).
+  audioplayers: ^6.0.0
+
+  # Gallery picker (DEMO_MODE: long-press camera lets judges pick any photo
+  # from their gallery to prove the model is not tuned to our 4 demo photos).
+  image_picker: ^1.0.0
+
+  # EXIF parser. BYO photo flow verifies GPS metadata against the planned
+  # route polyline; off-route photos get a describe-only prompt branch.
+  exif: ^3.3.0
+
+  # Voice output
+  flutter_tts: ^4.2.0
+
+  # Location
+  geolocator: ^13.0.0
+
+  # State
+  provider: ^6.1.2
+
+  # Utility
+  path_provider: ^2.1.0
+  path: ^1.9.0
+  intl: ^0.19.0
+
+  # Local config
+  flutter_dotenv: ^5.1.0
+
+  # JSON
+  json_annotation: ^4.9.0
+
+  # Typography - Noto Sans KR for Korean-optimized rendering.
+  google_fonts: ^6.2.1
+
+  # NCP Mobile Dynamic Map SDK (Flutter wrapper). Native SDK auth is tied to
+  # the Android applicationId whitelist, which is production-safe for this app.
+  flutter_naver_map: ^1.4.4
+
+  # Demo-only map fallback (no NCP auth required). When DEMO_MODE=true,
+  # map_preview_screen routes through flutter_map with OpenStreetMap raster
+  # tiles + manual polyline / marker layers — judges anywhere see a working
+  # map without our Korean NCP keys. realuse build keeps flutter_naver_map.
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  build_runner: ^2.4.0
+  json_serializable: ^6.8.0
+
+dependency_overrides:
+  # Keep the verified LiteRT-LM path: MTP/speculative decoding on GPU and
+  # the LoRA sidecar shim used by the Korean audio path. See patches/README.md.
+  flutter_gemma:
+    path: ../third_party/flutter_gemma_repo
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/env_config
+    # Korean audio LoRA sidecar (~50 MB). Bundled so the deployed APK can
+    # extract it to app-private storage on first launch — no separate HF
+    # download for the sidecar. Removed from disk when the user uninstalls
+    # the app (Android private dir semantics). See gemma_service.dart
+    # _ensureBundledLoraExtracted().
+    - assets/lora/
+    # Judge demo (DEMO_MODE): bundled photos + Korean WAV destination intent
+    # + cached T-Map pedestrian polyline.
+    - assets/demo_photos/
+    - assets/demo/photos/
+    - assets/demo/audio/
+    - assets/demo/route_polyline.json

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NAVER Cloud Platform Maps JS API v3 가 일부 타일 / 리소스를 HTTP 평문으로
+  보내서 Android 9+ 기본 cleartext-blocked 정책에 막힘. NCP JS 콘솔이 직접
+  이 도메인들의 평문 허용을 권유하므로 그대로 화이트리스트에 추가.
+
+  HTTPS 트래픽은 영향 없음 (default-config 가 그대로 적용).
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">map.naver.com</domain>
+        <domain includeSubdomains="true">map.naver.net</domain>
+        <domain includeSubdomains="true">map.pstatic.net</domain>
+        <domain includeSubdomains="true">apigw.ntruss.com</domain>
+        <domain includeSubdomains="true">ntruss.com</domain>
+    </domain-config>
+</network-security-config>

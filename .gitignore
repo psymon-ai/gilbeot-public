@@ -1,0 +1,67 @@
+# ── Secrets — NEVER commit ─────────────────────────────────────────────
+# Real env_config (with API keys). Keep `env_config.example` only.
+app/assets/env_config
+*.env
+.env
+
+# ── Flutter / Dart auto-generated ──────────────────────────────────────
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+.packages
+.pub-cache/
+.pub/
+build/
+**/Generated.xcconfig
+**/Flutter/Flutter.framework
+**/Flutter/Flutter.podspec
+
+# Android
+**/android/.gradle/
+**/android/captures/
+**/android/local.properties
+**/android/key.properties
+**/android/**/GeneratedPluginRegistrant.java
+**/android/app/release/
+
+# iOS
+**/ios/Flutter/.last_build_id
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Pods/
+**/ios/.symlinks/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# ── Large artifacts (model files, datasets) ────────────────────────────
+# The Gemma 4 .litertlm model is ~2.4GB — auto-downloaded at first launch.
+*.litertlm
+*.tflite
+*.bin
+models/
+
+# Exception: APK-bundled Korean-audio LoRA sidecar (50.7 MB). This is a
+# core deliverable — without it the demo APK loads the base model and
+# loses the 5.13% CER. Negate the *.bin rule for this specific path.
+!app/assets/lora/
+!app/assets/lora/*.bin
+
+# Logs / scratch
+*.log
+.tmp/
+outputs/
+data/
+__pycache__/
+*.pyc
+
+# Local working notes (this is the author's changelog while preparing the
+# deployment folder; not part of the submission surface).
+patch.md
+
+# Internal dev log highlights — kept locally only, not part of public surface.
+docs/dev_log_highlights.md

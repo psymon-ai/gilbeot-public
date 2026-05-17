@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon background for 길벗.
+
+  Teal gradient — matches the app's primary seed color
+  (lib/main.dart `_seedColor = 0xFF00695C`, teal-800) so the launcher
+  icon and in-app palette stay aligned.
+
+  Angle 315 (Android conv.: 0=→, 90=↑, 180=←, 270=↓) projects from
+  top-left to bottom-right, so startColor (lighter teal-600) sits in
+  the upper-left and endColor (teal-800 seed) sits in the lower-right.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:type="linear"
+        android:angle="315"
+        android:startColor="#00897B"
+        android:endColor="#00695C" />
+</shape>
