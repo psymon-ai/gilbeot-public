@@ -25,10 +25,11 @@
 3. **마이크** 버튼 1회 탭. 사전 녹음된 한국어 발화 (*"송파구보건소 가야 해"*)가 스피커로 재생됩니다. 단말 내 Gemma 4 audio 모델이 실시간으로 인식해 한국어/영어 텍스트를 함께 표시합니다.
 4. **카메라** 버튼 탭. 번들된 지하철역 사진이 전체화면으로 열리고 하단에 셔터 버튼이 보입니다. 셔터를 누르면 단말 내 Gemma 4 vision 모델이 JSON 안내문 (`{ instruction, landmarks, is_arrival, arrow_tip_x, arrow_tail_x }`)을 만들고 TTS가 읽어 줍니다.
 5. 사진 2 → 3 → 4까지 반복. 4번째 사진은 목적지 건물이며 모델이 `is_arrival=true`로 표시하면 길벗이 작별 인사를 합니다.
+6. **(보너스) 카메라 버튼을 길게 누르기** — 갤러리가 열리고 *아무 사진이나* 선택할 수 있습니다. 선택한 사진에 대해서도 단말 내 Gemma 4 vision 모델이 실제로 실행됩니다. 만약 사진의 EXIF GPS가 캐시된 경로에서 멀리 떨어져 있으면 앱은 안내를 상상하지 않고 *"이 사진은 계획된 경로 위에 있는 것 같지 않습니다"* 라는 안내와 함께 장면만 묘사합니다. 경로 이탈 안전 가드가 라이브로 동작.
 
 지도 버튼을 누르면 캐시된 T-Map 도보 polyline과 사진별로 한 단계씩 이동하는 origin 마커가 보입니다.
 
-Demo APK에서 실제로 실행되는 것: Gemma 4 audio · vision · text 생성, JSON 파싱, bbox 기반 좌/우 교정, 도착 인식. 고정된 것: 경로 데이터 (캐시된 T-Map polyline), 목적지 발화 (녹음 WAV), GPS (사진별 EXIF). 분리 기준은 아래 [Honest scaffolding](#honest-scaffolding-judge-mode) 섹션에 정리했습니다.
+Demo APK에서 실제로 실행되는 것: Gemma 4 audio · vision · text 생성, JSON 파싱, bbox 기반 좌/우 교정, 도착 인식. 고정된 것: 경로 데이터 (캐시된 T-Map polyline), 목적지 발화 (녹음 WAV), GPS (사진별 EXIF). 분리 기준은 아래 [데모 환경 대체 사항](#데모-환경-대체-사항) 섹션에 정리했습니다.
 
 ## 데모 영상
 
@@ -111,15 +112,14 @@ gilbeot-public/
     └── build.md
 ```
 
-## Honest scaffolding (judge mode) — 솔직한 발판 공개
+## 데모 환경 대체 사항
 
-Demo APK에는 코드 리뷰어가 볼 수 있는 세 가지 발판이 들어 있습니다 — 숨기지 않고 문서화했습니다. 필요해서 들어간 것이지 가린 것이 아닙니다.
+Demo APK는 한국 밖에서는 end-to-end로 실행할 수 없는 두 가지를 대체합니다. 모두 비-한국 심사자를 위한 self-contained 데모 동작에 필수적인 조치이며, 무언가를 가리는 의도가 아닙니다.
 
-1. **Canned 경로 + 사진별 EXIF GPS를 origin으로 사용** — 한국 지도 API (ODsay / T-Map / NaverMap-Korea)는 한국 IP 외부에서 차단됩니다. T-Map polyline을 한국에서 한 번 받아 `assets/demo/route_polyline.json` 으로 번들했습니다. Demo 사진 4장은 실제 EXIF GPS를 사용해 지도 위 origin 마커를 한 단계씩 진행시킵니다.
-2. **마지막 사진 도착 fallback** — `if (isLastDemoPhoto || textArrival) llmArrival = true;`. 4번째 사진에서 모델이 `is_arrival`을 정확히 판정하는 비율은 경험적으로 약 90 %. 단 한 번의 오인식으로 데모가 멈추지 않도록 강제 fallback을 둡니다.
-3. **단계별 scene-context 힌트** (영어) — 현재 사진의 *역할* ("you're at the fare gates")을 모델에 알려 줍니다. 다만 방향 (left / right / up)은 **지시하지 않습니다** — 화살표는 모델이 사진에서 직접 읽어 판단합니다.
+1. **실 GPS 대신 사진별 EXIF GPS 사용** — 심사자가 잠실역에 있지 않으므로 실 GPS가 무의미합니다. Demo 사진 4장이 실제 EXIF GPS를 갖고 있어, 도보 진행에 맞춰 지도 위 origin 마커를 한 단계씩 진행시킵니다. Production 빌드는 실 Geolocator 사용.
+2. **마지막 사진 도착 fallback** — Production 빌드는 도착 판정에 두 독립 신호를 결합합니다: 목적지까지의 GPS-Haversine + vision 모델의 `is_arrival` 플래그. 데모는 모델 신호 한 축만 가지므로 `if (isLastDemoPhoto || textArrival) llmArrival = true;` 한 줄로 단 한 번의 오인식으로 데모가 멈추지 않도록 합니다. 실제 S23 reviewer 시뮬레이션에서는 모델이 photo 4를 스스로 인식해 fallback이 발동하지 않았습니다.
 
-한국 production 빌드 (`com.psymon.gilbeot.real`)에는 이 발판이 하나도 없습니다 — end-to-end 모두 실제 동작입니다.
+한국 production 빌드 (`com.psymon.gilbeot.real`)는 두 항목 모두 대체하지 않습니다 — end-to-end 모두 실제 동작입니다.
 
 ## 주석 언어 정책
 

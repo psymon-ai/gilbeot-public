@@ -161,7 +161,7 @@ arrow_tip_x > arrow_tail_x  →  right
 | generated JSON | parsing, 좌/우 교정, 도착 인식 |
 | gallery long-press | 임의 사진 + EXIF off-route 처리 |
 
-카메라를 길게 누르면 갤러리에서 임의 사진을 고를 수 있습니다. 같은 vision path를 타고, EXIF GPS가 계획 경로에서 멀면 안내를 상상하지 않고 장면 설명만 합니다. 한국 production 빌드(`com.psymon.gilbeot.real`)에는 이런 발판이 없습니다.
+카메라를 길게 누르면 갤러리에서 임의 사진을 고를 수 있습니다. 같은 vision path를 타고, EXIF GPS가 계획 경로에서 멀면 안내를 상상하지 않고 장면 설명만 합니다. 한국 production 빌드(`com.psymon.gilbeot.real`)에는 이런 대체 사항이 없습니다.
 
 ## 6. Future Work
 

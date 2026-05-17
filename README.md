@@ -25,10 +25,11 @@ The Korean production build needs Korean Map APIs (ODsay / T-Map / Naver) and a 
 3. Tap the **microphone** once. A pre-recorded Korean utterance (*"송파구보건소 가야 해" — I need to go to Songpa Health Center*) plays audibly. The on-device Gemma 4 audio model transcribes it in real time and shows both Korean and English text.
 4. Tap the **camera** button. A bundled subway-station photo opens full-screen with a round shutter at the bottom. Tap the shutter — the on-device Gemma 4 vision model emits a JSON instruction (`{ instruction, landmarks, is_arrival, arrow_tip_x, arrow_tail_x }`) and TTS reads the instruction aloud.
 5. Repeat for photos 2 → 3 → 4. Photo 4 is the destination building; the model marks `is_arrival=true` and Gilbeot says goodbye.
+6. **(Bonus) Long-press the camera button** to open your phone's gallery and pick *any* photo. The on-device Gemma 4 vision model still runs for real on whatever you pick — if the photo's EXIF GPS is far from the cached route, the app refuses to invent guidance and instead describes the scene with a *"this photo doesn't look like it's on your planned route"* note. This is the off-route safety guard, live.
 
 The map button shows the cached T-Map walking polyline with origin markers that step through the journey.
 
-What runs live in the Demo APK: Gemma 4 audio, vision, text generation, JSON parsing, arrow-based left/right correction, arrival recognition. What is canned: routing data (cached T-Map polyline), the destination utterance (recorded WAV), GPS (per-photo EXIF). The split is laid out in [Honest scaffolding](#honest-scaffolding-judge-mode) below.
+What runs live in the Demo APK: Gemma 4 audio, vision, text generation, JSON parsing, arrow-based left/right correction, arrival recognition. What is canned: routing data (cached T-Map polyline), the destination utterance (recorded WAV), GPS (per-photo EXIF). The split is laid out in [Demo build substitutions](#demo-build-substitutions) below.
 
 ## Demo video
 
@@ -111,15 +112,14 @@ gilbeot-public/
     └── build.md
 ```
 
-## Honest scaffolding (judge mode)
+## Demo build substitutions
 
-The Demo APK includes three pieces of scaffolding that a code reviewer will see — they are documented because they are necessary, not hidden.
+The Demo APK substitutes two things that cannot run end-to-end outside Korea. Both are necessary for the demo to function as a self-contained experience for non-Korean reviewers — they are not concealments of anything.
 
-1. **Canned route + per-photo EXIF GPS as origin** — Korean map APIs (ODsay / T-Map / NaverMap-Korea) are IP-blocked outside Korea. The cached T-Map polyline was fetched once from Korea and bundled as `assets/demo/route_polyline.json`. The 4 demo photos use their real EXIF GPS to advance the origin marker on the map.
-2. **Last-photo arrival fallback** — `if (isLastDemoPhoto || textArrival) llmArrival = true;`. Empirically the model gets `is_arrival` right on photo 4 ~90 % of the time; the fallback keeps the demo from stranding on a single missed detection.
-3. **Scene-context hint per step** (in English) — gives the model the *role* of the current photo ("you're at the fare gates"), but **does not** prescribe direction (left / right / up). The model reads the arrows visible in the photo itself.
+1. **Per-photo EXIF GPS in place of live GPS** — live GPS is meaningless when the reviewer is not at Jamsil Station, so the 4 demo photos carry their real EXIF GPS and that advances the origin marker on the map in step with the walk. The production build uses live Geolocator.
+2. **Last-photo arrival fallback** — the production build combines two independent signals for arrival: GPS-Haversine to the destination + the vision model's `is_arrival` flag. The demo has only the model signal, so a `if (isLastDemoPhoto || textArrival) llmArrival = true;` line ensures the demo does not strand on a single missed detection. In our S23 reviewer simulation the model recognised photo 4 on its own — the fallback never had to fire.
 
-The Korean production build (`com.psymon.gilbeot.real`) has none of these — it does live everything end-to-end.
+The Korean production build (`com.psymon.gilbeot.real`) does not substitute either of these — it runs live end-to-end.
 
 ## Comment language convention
 

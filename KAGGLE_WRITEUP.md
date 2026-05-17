@@ -157,7 +157,7 @@ Judges may not have Korean API keys, GPS, subway photos, or Korean speech. The D
 | generated JSON | parsing, left/right correction, arrival detection |
 | gallery long-press | arbitrary photo + EXIF off-route handling |
 
-Long-pressing the camera opens the gallery; any photo goes through the same vision path, and an off-route EXIF GPS triggers description instead of guidance. The Korean production build has no such scaffolding.
+Long-pressing the camera opens the gallery; any photo goes through the same vision path, and an off-route EXIF GPS triggers description instead of guidance. The Korean production build has no such substitutions.
 
 ## 6. Future Work
 

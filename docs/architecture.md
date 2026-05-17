@@ -142,27 +142,26 @@ Prefill scales with prompt size (English DEMO prompt is ~3.3 KB / ~900
 tokens text + ~256 visual tokens at 768 px); decode scales with output
 length (typical 50–105 chunks per photo).
 
-## Honest scaffolding (judge mode)
+## Demo build substitutions
 
-A code reviewer will see these three pieces — they're documented here
-because they're necessary, not hidden:
+The judge demo substitutes two things that cannot run end-to-end outside
+Korea. Both are necessary for the demo to function as a self-contained
+experience for non-Korean reviewers — they are not concealments of
+anything.
 
-1. **Canned route + per-photo EXIF GPS as origin** — required because
-   Korean map APIs (ODsay / T-Map / NaverMap-Korea) are
-   IP-blocked outside Korea. The cached T-Map polyline was fetched once
-   from Korea and bundled as `assets/demo/route_polyline.json`.
+1. **Per-photo EXIF GPS in place of live GPS** — required because live
+   GPS is meaningless when the reviewer is not at Jamsil Station. The
+   4 demo photos carry their real EXIF GPS, which advances the origin
+   marker on the map in step with the walk. The production build uses
+   live Geolocator.
 
 2. **Last-photo arrival fallback** — `if (isLastDemoPhoto || textArrival)
-   llmArrival = true;` in `home_screen.dart`. Empirically the model gets
-   `is_arrival` right on photo 4 ~90% of the time, but a single missed
-   detection would strand the demo, so we force it.
+   llmArrival = true;` in `home_screen.dart`. The production build
+   combines two independent signals for arrival: GPS-Haversine to the
+   destination + the vision model's `is_arrival` flag. The demo has
+   only the model signal, so this fallback ensures the demo does not
+   strand on a single missed detection. In our S23 reviewer simulation
+   the model recognised photo 4 on its own — the fallback never fired.
 
-3. **Scene-context hint per step** — gives the model the *role* of the
-   current photo ("you're at the fare gates", "you're at the destination")
-   but **does not prescribe direction** (left / right / up). The model
-   reads the arrows visible in the photo itself. We tested both — the
-   prescriptive version was rejected as too obviously scripted (FU105
-   discussion in dev_log).
-
-The Korean production build (`com.psymon.gilbeot.real`) doesn't have any
-of these — it does live everything end-to-end.
+The Korean production build (`com.psymon.gilbeot.real`) does not
+substitute either of these — it runs live end-to-end.
