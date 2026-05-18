@@ -1,12 +1,18 @@
+<div align="right">
+
+[EN](KAGGLE_WRITEUP.md) · [KO](KAGGLE_WRITEUP_KO.md)
+
+</div>
+
 # Gilbeot — On-device multimodal AI walking assistant for elderly users
 
 ## 1. Motivation
 
-For many elderly users, getting lost is not about lacking a map app. It happens when the app's words do not connect to the scene in front of them. Navigation says "turn right in 250 m," but an older user often understands the road as **visible objects and scenes**: "under the yellow sign," "past the pharmacy," or "the side with the stair handrail."
+For many elderly users, getting lost isn't about a missing map app — it happens when the app's words ("turn right in 250 m") don't match the scene in front of them. Older users read the road as **visible objects**: "under the yellow sign," "past the pharmacy."
 
 > **Gilbeot translates machine coordinates into human coordinates.**
 
-Modern multimodal AI can understand speech, images, and text together, but it still rarely reaches the moment when an elderly person is outside and uncertain. Gilbeot puts Gemma 4 onto scenes older users already know.
+Modern multimodal AI rarely reaches the moment when an elderly person is actually outside and uncertain. Gilbeot puts Gemma 4 onto scenes older users already know.
 
 ## 2. Solution Approach
 
@@ -21,11 +27,11 @@ voice destination → Gemma 4 audio → Korean transcript
                   → TTS speaks the instruction
 ```
 
-Off-route handling is a safety mechanism: when GPS drifts from the planned polyline, the production build blocks guidance instead of letting the VLM hallucinate from an unrelated scene.
+Off-route handling is a safety net: if GPS drifts off the polyline, production blocks guidance rather than let the VLM hallucinate from an unrelated scene.
 
 ### Why On-device
 
-This product is needed in subway stations, underground malls, and hospital areas, where networks can be unreliable and surroundings are complex. Voice and photos also reveal location and movement. Korea Gallup 2025 reports Galaxy use at 92% among people in their 60s and 82% among users 70+, making Android Galaxy the right first target. [Korea Gallup 2025](https://www.gallup.co.kr/dir/GallupReport/GallupReport%2820250707%29_%EC%8A%A4%EB%A7%88%ED%8A%B8%ED%8F%B0.pdf)
+This product is needed in subway stations, underground malls, and hospital areas — where networks are unreliable, surroundings are complex, and voice/photos reveal location. Korea Gallup 2025 puts Galaxy at 92% (60s) and 82% (70+), making Android Galaxy the first target. [Korea Gallup 2025](https://www.gallup.co.kr/dir/GallupReport/GallupReport%2820250707%29_%EC%8A%A4%EB%A7%88%ED%8A%B8%ED%8F%B0.pdf)
 
 ### Two APKs
 
@@ -70,6 +76,8 @@ The bundle is ~2.4GB: vision encoder ~208MB, audio encoder ~102MB, LM prefill/de
 
 The hard part was not one model score. **Korean audio → mobile deployment → safe visual guidance → real-device latency** had to work as one product loop. Better audio is useless if it cannot land on Android; good guidance is dangerous if left/right flips.
 
+> Full technical detail is in the companion [Technical Report](https://github.com/psymon-ai/gilbeot-public/blob/main/docs/technical_report.md); this section is the writeup-length summary.
+
 ### 5.1 Audio: Elderly Korean Speech
 
 If the destination is misheard, every route step is wrong. Base Gemma 4 audio scored **13.14% CER** on our 134-utterance Korean held-out set, not enough for destination input.
@@ -111,9 +119,9 @@ audio adapter → alpha-8 sidecar  → runtime loraPath
 
 The compromise was deliberate: graft stable parts into the bundle, and attach the risky audio adapter as a runtime sidecar. Patcher source: [`tools/README.md`](https://github.com/psymon-ai/gilbeot-public/blob/main/tools/README.md).
 
-We also tested Cactus. It was accurate, but S10e latency exceeded the product limit.
+We also tested Cactus. On the same compiler-board harness, Cactus was ~3.4× slower per sample, past the S10e budget. (Seconds below are board anchors, relative-only.)
 
-| Backend | CER | S10e median/sample |
+| Backend | CER | Board median/sample |
 |---|---:|---:|
 | LiteRT (graft+sidecar) | 5.003% | 12.48s |
 | Cactus INT8 | 3.949% | 41.94s |
@@ -136,7 +144,7 @@ The model localizes; code decides left/right. If the sentence conflicts with pix
 
 ### 5.4 Latency: Backend Policy per Device
 
-Speed is accessibility. On S23 GPU, MTP reduced decode from 17.8s to 11.5s, a 1.5-1.6x gain. On S10e CPU, MTP hurt because drafter and main model share compute, and the LoRA-tuned LM differs from the base drafter distribution.
+Speed is accessibility. On S23 GPU, MTP reduced decode from 17.8s to 11.5s, a 1.5-1.6x gain. On S10e CPU, MTP hurt because drafter and main model share compute and our LoRA path lowers per-cycle acceptance below the CPU breakeven point.
 
 | Device | Backend | MTP | Per photo |
 |---|---|---|---:|
@@ -158,6 +166,8 @@ Judges may not have Korean API keys, GPS, subway photos, or Korean speech. The D
 | gallery long-press | arbitrary photo + EXIF off-route handling |
 
 Long-pressing the camera opens the gallery; any photo goes through the same vision path, and an off-route EXIF GPS triggers description instead of guidance. The Korean production build has no such substitutions.
+
+> Per-subsection deep-dives (Unsloth custom-layer skip, three patcher attempts, Cactus PR, VLM word-prior bug, MTP measurements): see the [Technical Report](https://github.com/psymon-ai/gilbeot-public/blob/main/docs/technical_report.md).
 
 ## 6. Future Work
 

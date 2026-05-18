@@ -1,14 +1,20 @@
+<div align="right">
+
+[EN](KAGGLE_WRITEUP.md) · [KO](KAGGLE_WRITEUP_KO.md)
+
+</div>
+
 # 길벗(Gilbeot) — 고령 사용자를 위한 온디바이스 멀티모달 AI 길안내 앱
 
 > **TL;DR.** 길벗은 고령 사용자를 위한 온디바이스 멀티모달 AI 길안내 안드로이드 앱입니다. 한국어로 목적지를 말하면 Gemma 4 audio가 발화를 인식하고 앱이 경로를 만들며, 길에서 찍은 사진을 Gemma 4 vision이 읽어 "노란 10번 출구 표지판 아래에서 왼쪽으로" 같은 안내문으로 바꿔 TTS로 들려줍니다. 모델 다운로드 이후 음성·사진·안내 생성은 단말 안의 Gemma 4 E2B 단일 모델에서 처리되고, 음성·사진·위치는 서버로 나가지 않습니다. Galaxy S23(GPU+MTP, ~12초/사진)·S10e(CPU, ~50초/사진) 실기기 검증.
 
 ## 1. Motivation
 
-고령자가 길을 잃는 순간은 지도 앱이 없는 순간이 아니라, 지도 앱의 말이 내 눈앞의 장면과 연결되지 않는 순간입니다. 지도와 내비게이션은 "250m 앞에서 우회전", "삼거리에서 2시 방향" 같은 좌표·도로 기준으로 말하지만, 어르신에게 길은 "보이는 노란 표지판 아래", "약국 지나서 오른쪽", "계단 손잡이가 있는 쪽"처럼 **눈앞의 사물과 장면**으로 이해됩니다.
+어르신이 길을 잃는 순간은 지도 앱이 없는 순간이 아니라, "250m 앞에서 우회전" 같은 좌표·도로 기준의 말이 눈앞의 장면과 연결되지 않는 순간입니다. 어르신에게 길은 "보이는 노란 표지판 아래", "약국 지나서 오른쪽"처럼 **눈앞의 사물과 장면**으로 이해됩니다.
 
 > **길벗은 기계 좌표계를 인간 좌표계로 번역하는 온디바이스 AI 길안내 도우미입니다.**
 
-최신 멀티모달 AI는 음성·이미지·텍스트를 한 번에 이해할 수 있는 단계까지 왔지만, 그 기술이 어르신의 실제 외출 순간에는 아직 자연스럽게 닿지 않습니다. 길벗은 Gemma 4를 어르신이 쓰는 언어와 장면 위에 올려, 최신 AI와 일상 이동 경험 사이의 거리를 줄이려는 시도입니다.
+최신 멀티모달 AI는 음성·이미지·텍스트를 한 번에 이해할 수 있지만, 그 기술이 어르신의 실제 외출 순간에 자연스럽게 닿지 않습니다. 길벗은 Gemma 4를 어르신이 쓰는 언어와 장면 위에 올렸습니다.
 
 ## 2. Solution Approach
 
@@ -23,11 +29,11 @@
             → TTS 음성 안내
 ```
 
-경로 이탈 처리는 중요한 안전 장치입니다. 사용자가 계획된 polyline에서 벗어난 채로 사진을 찍으면 모델이 엉뚱한 사진을 보고도 "계속 가세요"라고 상상할 수 있어, production은 현재 GPS와 도보 segment 사이 Haversine 거리를 계산해 이탈 시 안내 생성을 막고 재탐색을 요청합니다.
+경로 이탈 처리는 안전 장치입니다. GPS가 polyline에서 벗어나면 production은 안내 생성을 막고 재탐색을 요청합니다 — 엉뚱한 사진을 보고도 모델이 "계속 가세요"라고 상상하는 걸 방지하기 위해서입니다.
 
 ### 왜 온디바이스인가
 
-이 서비스가 필요한 순간은 지하철역·지하상가·병원 주변처럼 네트워크가 불안정하거나 주변이 복잡한 곳입니다. 또 음성과 사진은 사용자 위치·이동 상황을 드러내는 민감 데이터입니다. 한국갤럽 2025 조사에서 60대는 92%, 70대 이상은 82%가 Galaxy를 사용 — 한국 고령 사용자를 위한 첫 기준점은 iOS가 아닌 Android입니다. [한국갤럽 2025](https://www.gallup.co.kr/dir/GallupReport/GallupReport%2820250707%29_%EC%8A%A4%EB%A7%88%ED%8A%B8%ED%8F%B0.pdf)
+이 서비스가 필요한 순간은 지하철역·지하상가·병원 주변처럼 네트워크가 불안정하고 주변이 복잡한 곳입니다. 음성·사진은 위치를 드러내는 민감 데이터이기도 합니다. 한국갤럽 2025에 따르면 60대의 92%, 70대 이상의 82%가 Galaxy를 사용하고 있어 첫 기준점은 Android입니다. [한국갤럽 2025](https://www.gallup.co.kr/dir/GallupReport/GallupReport%2820250707%29_%EC%8A%A4%EB%A7%88%ED%8A%B8%ED%8F%B0.pdf)
 
 ### 두 가지 APK
 
@@ -72,6 +78,8 @@
 
 이 프로젝트의 어려움은 모델 성능 하나가 아니라, **한국어 오디오 → 모바일 배포 → 안전한 시각 안내 → 실기기 속도**가 한 제품 루프로 이어져야 한다는 점이었습니다. 각 문제는 따로 해결할 수 없었습니다. 오디오 정확도가 좋아도 Android에 얹히지 않으면 제품이 아니고, 시각 안내가 그럴듯해도 좌/우를 틀리면 어르신에게 위험합니다.
 
+> 풀버전 기술 디테일은 [Technical Report (한국어)](https://github.com/psymon-ai/gilbeot-public/blob/main/docs/technical_report_ko.md)에 정리했습니다. 본문은 writeup 길이에 맞춘 요약입니다.
+
 ### 5.1 Audio: 고령 한국어 발화
 
 목적지를 잘못 들으면 모든 경로가 틀어집니다. Base Gemma 4 audio는 134발화 한국어 held-out 셋에서 CER **13.14%**였고, 목적지 입력용으로는 부족했습니다.
@@ -115,9 +123,9 @@ audio adapter ─► alpha-8 sidecar ─────► runtime loraPath
 
 이 방식은 LoRA 방향 변화만 남기고 runtime kernel이 기대하는 quantization grid를 보존합니다. audio encoder를 `.litertlm` 안에서 과하게 건드리면 Adreno 740 prefill kernel이 불안정해져, audio adapter는 sidecar로 분리했습니다. 즉 최종 구조는 "가능한 부분은 bundle에 graft하고, 위험한 부분은 runtime sidecar로 붙이는" 타협입니다. 패처 소스: [`tools/README.md`](https://github.com/psymon-ai/gilbeot-public/blob/main/tools/README.md).
 
-**Cactus 비교**도 진행했습니다. Cactus는 같은 문제를 다른 방향에서 푸는 좋은 대안이었습니다. 자체 runtime으로 Gemma 4 audio를 실행했고, 정확도만 보면 매우 매력적이었습니다. 문제는 S10e latency가 제품 한도를 넘었다는 점입니다.
+**Cactus 비교**도 진행했습니다. 같은 compiler-board harness에서 Cactus는 sample당 ~3.4배 느려 S10e budget을 넘었습니다. (아래 초 단위는 board anchor, *상대 비교 전용*.)
 
-| Backend | CER | S10e median/sample |
+| Backend | CER | Board median/sample |
 |---|---:|---:|
 | LiteRT (graft+sidecar) | 5.003% | 12.48초 |
 | Cactus INT8 | 3.949% | 41.94초 |
@@ -140,7 +148,7 @@ arrow_tip_x > arrow_tail_x  →  right
 
 ### 5.4 Latency: 단말별 backend 정책
 
-속도는 편의가 아닌 접근성입니다. S23 GPU에서는 MTP가 decode 17.8→11.5초로 1.5~1.6× 가속했습니다. S10e CPU에서는 반대로 drafter와 main model이 같은 자원을 나눠 쓰고, LoRA가 적용된 main LM과 base drafter 분포 차이로 acceptance가 낮아져 MTP overhead가 더 컸습니다.
+속도는 편의가 아닌 접근성입니다. S23 GPU에서는 MTP가 decode 17.8→11.5초로 1.5~1.6× 가속했습니다. S10e CPU에서는 drafter와 main model이 같은 자원을 나눠 쓰는데, 우리 LoRA path가 cycle당 acceptance를 CPU breakeven 아래로 내려서 MTP가 손해였습니다.
 
 | 단말 | Backend | MTP | 사진당 |
 |---|---|---|---:|
@@ -162,6 +170,8 @@ arrow_tip_x > arrow_tail_x  →  right
 | gallery long-press | 임의 사진 + EXIF off-route 처리 |
 
 카메라를 길게 누르면 갤러리에서 임의 사진을 고를 수 있습니다. 같은 vision path를 타고, EXIF GPS가 계획 경로에서 멀면 안내를 상상하지 않고 장면 설명만 합니다. 한국 production 빌드(`com.psymon.gilbeot.real`)에는 이런 대체 사항이 없습니다.
+
+> 각 소절의 풀버전 디테일 (Unsloth custom-layer skip, 세 patcher 시도, Cactus PR, VLM 단어 prior 버그, MTP 측정): [Technical Report (한국어)](https://github.com/psymon-ai/gilbeot-public/blob/main/docs/technical_report_ko.md) 참고.
 
 ## 6. Future Work
 

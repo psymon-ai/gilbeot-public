@@ -63,5 +63,9 @@ __pycache__/
 # deployment folder; not part of the submission surface).
 patch.md
 
+# Full-length writeup drafts kept locally; Kaggle uses the shortened files.
+KAGGLE_WRITEUP_full.md
+KAGGLE_WRITEUP_KO_full.md
+
 # Internal dev log highlights — kept locally only, not part of public surface.
 docs/dev_log_highlights.md

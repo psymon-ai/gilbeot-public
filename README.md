@@ -1,3 +1,9 @@
+<div align="right">
+
+[EN](README.md) · [KO](README_KO.md)
+
+</div>
+
 # 길벗 (Gilbeot) — On-device walking assistant for elderly users
 
 > An on-device multimodal walking assistant for elderly Android users. The user speaks a Korean destination; Gemma 4 audio transcribes it and the app builds a route. On the road, photos go through Gemma 4 vision and the app speaks back a short, scene-specific instruction. Every core inference runs on the phone.
